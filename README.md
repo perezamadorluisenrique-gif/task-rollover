@@ -22,6 +22,8 @@ Today's note, when you open it:
 - [/] Review Ana's pull request
 ```
 
+![Today's daily note with the three unfinished tasks under the Tasks heading and a notice "3 unfinished tasks rolled over" with an Undo button](https://raw.githubusercontent.com/perezamadorluisenrique-gif/task-rollover/main/docs/rollover.png)
+
 A notice says how many tasks moved and has an **Undo** button. Anything that is
 not marked finished counts as unfinished, so tasks with custom status
 characters (`[/]`, `[?]`, `[!]`) roll over too.
