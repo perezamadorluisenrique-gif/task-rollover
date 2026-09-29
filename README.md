@@ -103,6 +103,7 @@ In Obsidian, open **Settings → Community plugins → Browse** and search for
 | [List Item Callouts](https://obsidian.md/plugins?id=list-item-callouts) | Colour a single list item as a callout by starting it with a character such as `&`, `!` or `?`. | [list-item-callouts](https://github.com/perezamadorluisenrique-gif/list-item-callouts) |
 | [Folder Counts](https://obsidian.md/plugins?id=folder-counts) | See how many notes each folder holds, right in the file explorer. | [folder-counts](https://github.com/perezamadorluisenrique-gif/folder-counts) |
 | [Note Reading Time](https://obsidian.md/plugins?id=note-reading-time) | Show how long the current note, or your selection, takes to read, in the status bar. | [note-reading-time](https://github.com/perezamadorluisenrique-gif/note-reading-time) |
+| [Zoom Into Section](https://obsidian.md/plugins?id=zoom-into-section) | Zoom into a heading or list item to see only it and its contents, with a breadcrumb bar to climb back out. | [zoom-into-section](https://github.com/perezamadorluisenrique-gif/zoom-into-section) |
 
 ## License
 
