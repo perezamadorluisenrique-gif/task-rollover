@@ -1,4 +1,20 @@
 import { App, FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFile, moment } from 'obsidian';
+
+/**
+ * The part of moment this plugin uses, typed here: the directory's review has no types for `moment`
+ * and reads every untyped call as unsafe.
+ */
+interface Day {
+  isValid(): boolean;
+  startOf(unit: 'day'): Day;
+  valueOf(): number;
+}
+const parseDay = moment as unknown as (input?: string, format?: string, strict?: boolean) => Day;
+
+/** Midnight today, local time, in milliseconds. */
+function todayStart(): number {
+  return parseDay().startOf('day').valueOf();
+}
 import type { SettingDefinitionItem } from 'obsidian';
 
 import {
@@ -209,7 +225,7 @@ export default class TaskRolloverPlugin extends Plugin {
     const prefix = config.folder ? `${config.folder}/` : '';
     if (!file.path.startsWith(prefix)) return null;
     const name = file.path.slice(prefix.length).replace(/\.md$/, '');
-    const m = moment(name, config.format, true);
+    const m = parseDay(name, config.format, true);
     return m.isValid() ? m.startOf('day').valueOf() : null;
   }
 
@@ -246,7 +262,7 @@ export default class TaskRolloverPlugin extends Plugin {
     const config = this.dailyConfig();
     if (!config) return;
     const day = this.dayOf(file, config);
-    if (day === null || day !== moment().startOf('day').valueOf()) return;
+    if (day === null || day !== todayStart()) return;
     this.busy.add(file.path);
     try {
       await this.settled(file);
@@ -274,7 +290,7 @@ export default class TaskRolloverPlugin extends Plugin {
   private targetNote(config: DailyConfig): TFile | null {
     const active = this.app.workspace.getActiveFile();
     if (active && this.dayOf(active, config) !== null) return active;
-    const today = moment().startOf('day').valueOf();
+    const today = todayStart();
     return this.dailyNotes(config).find((n) => n.day === today)?.file ?? null;
   }
 
