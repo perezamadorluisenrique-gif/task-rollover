@@ -1,6 +1,6 @@
 {
   "name": "task-rollover",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Task Rollover for Obsidian - Move the unfinished tasks of your last daily note into today's note when it is created, under a heading you choose, with undo, nested items and no duplicates.",
   "main": "main.js",
   "scripts": {
