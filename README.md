@@ -48,7 +48,15 @@ Works on desktop and mobile. It reads the folder and date format from the core
   rollover, each moved task is found again and checked before it is touched, so
   a line you edited in the meantime is left as it is, and removing one task
   never removes another line that happens to read the same.
-- **A real undo.** It puts both notes back exactly as they were, for as long as
+- **Catches up after a long break.** "Gather unfinished tasks from past daily
+  notes" looks back 7, 30 or 90 days, or all the way, and lists every
+  unfinished task grouped by the note it sits in, newest note first. All are
+  ticked; untick what you do not want, and press the button to move the rest
+  into today's note (created if it does not exist yet). The same rules as a
+  normal rollover apply: finished markers, source headings, empty tasks, tasks
+  already in today's note and your choice for the earlier notes. A task that
+  appears in several notes is listed once, from the newest.
+- **A real undo.** It puts all the notes back exactly as they were, for as long as
   neither has changed since. If one has, it says so instead of overwriting your
   work.
 
@@ -73,7 +81,8 @@ Works on desktop and mobile. It reads the folder and date format from the core
 |---|---|
 | Roll over unfinished tasks now | Into the daily note in front of you, or today's if you are elsewhere, from the most recent earlier daily note. |
 | Roll over unfinished tasks from another daily note | Pick which earlier note to take them from, for example after a week away. |
-| Undo the last rollover | Puts both notes back. Only shown while there is something to undo. |
+| Gather unfinished tasks from past daily notes… | Choose how far back to look, review the tasks by note, and move the ticked ones into today's note. |
+| Undo the last rollover | Puts every note it changed back, a whole gather included. Only shown while there is something to undo. |
 
 ## Coming from Rollover Daily Todos
 
