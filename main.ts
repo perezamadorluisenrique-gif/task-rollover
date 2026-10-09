@@ -1,4 +1,4 @@
-import { App, FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFile, moment } from 'obsidian';
+import { App, FuzzySuggestModal, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, moment } from 'obsidian';
 
 /**
  * The part of moment this plugin uses, typed here: the directory's review has no types for `moment`
@@ -7,6 +7,8 @@ import { App, FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFil
 interface Day {
   isValid(): boolean;
   startOf(unit: 'day'): Day;
+  subtract(amount: number, unit: 'days'): Day;
+  format(pattern?: string): string;
   valueOf(): number;
 }
 const parseDay = moment as unknown as (input?: string, format?: string, strict?: boolean) => Day;
@@ -17,6 +19,8 @@ function todayStart(): number {
 }
 import type { SettingDefinitionItem } from 'obsidian';
 
+import { collectAcross, dayOfPath, inRange, insertGathered } from './src/gather.ts';
+import type { Group, SourceNote } from './src/gather.ts';
 import {
   applyToSource,
   earlierNotes,
@@ -122,6 +126,8 @@ const TEXT = {
 interface DailyConfig {
   folder: string;
   format: string;
+  /** The Daily notes template, used when a note has to be created. */
+  template?: string;
 }
 
 interface DailyNote {
@@ -130,15 +136,34 @@ interface DailyNote {
   day: number;
 }
 
+interface Part {
+  file: TFile;
+  before: string;
+  after: string;
+}
+
+/** What the last rollover changed: the target and every source note, undone together. */
 interface Rollover {
-  target: { file: TFile; before: string; after: string };
-  source?: { file: TFile; before: string; after: string };
+  target: Part;
+  sources: Part[];
+}
+
+/** How far back "Gather" looks, in days; null is every past daily note. */
+const RANGES: Record<string, { label: string; days: number | null }> = {
+  '7': { label: 'Last 7 days', days: 7 },
+  '30': { label: 'Last 30 days', days: 30 },
+  '90': { label: 'Last 90 days', days: 90 },
+  all: { label: 'All past daily notes', days: null },
+};
+
+interface GatherGroup extends Group {
+  file: TFile;
 }
 
 /** The pieces of Obsidian's internal plugin registry this reads. Not public API, but the Daily notes options are the only place its folder and format live. */
 interface InternalApp {
-  internalPlugins?: { plugins?: Record<string, { enabled?: boolean; instance?: { options?: { folder?: string; format?: string } } }> };
-  plugins?: { getPlugin?: (id: string) => { settings?: { daily?: { enabled?: boolean; folder?: string; format?: string } } } | null };
+  internalPlugins?: { plugins?: Record<string, { enabled?: boolean; instance?: { options?: { folder?: string; format?: string; template?: string } } }> };
+  plugins?: { getPlugin?: (id: string) => { settings?: { daily?: { enabled?: boolean; folder?: string; format?: string; template?: string } } } | null };
 }
 
 export default class TaskRolloverPlugin extends Plugin {
@@ -161,6 +186,12 @@ export default class TaskRolloverPlugin extends Plugin {
       name: 'Roll over unfinished tasks from another daily note',
       icon: 'calendar-search',
       callback: () => this.pickSource(),
+    });
+    this.addCommand({
+      id: 'gather',
+      name: 'Gather unfinished tasks from past daily notes…',
+      icon: 'calendar-range',
+      callback: () => this.openGather(),
     });
     this.addCommand({
       id: 'undo',
@@ -210,23 +241,22 @@ export default class TaskRolloverPlugin extends Plugin {
     const app = this.app as unknown as InternalApp;
     const periodic = app.plugins?.getPlugin?.('periodic-notes')?.settings?.daily;
     const core = app.internalPlugins?.plugins?.['daily-notes'];
-    let base: { folder?: string; format?: string } | undefined;
+    let base: { folder?: string; format?: string; template?: string } | undefined;
     if (periodic?.enabled) base = periodic;
     else if (core?.enabled) base = core.instance?.options;
     const overridden = s.folderOverride.trim() !== '' || s.formatOverride.trim() !== '';
     if (!base && !overridden) return null;
     const folder = (s.folderOverride.trim() || base?.folder || '').replace(/^\/+|\/+$/g, '');
     const format = s.formatOverride.trim() || base?.format?.trim() || 'YYYY-MM-DD';
-    return { folder, format };
+    return { folder, format, template: base?.template?.trim() || undefined };
   }
 
   /** The day a file is the daily note of, or null if it is not one. */
   private dayOf(file: TFile, config: DailyConfig): number | null {
-    const prefix = config.folder ? `${config.folder}/` : '';
-    if (!file.path.startsWith(prefix)) return null;
-    const name = file.path.slice(prefix.length).replace(/\.md$/, '');
-    const m = parseDay(name, config.format, true);
-    return m.isValid() ? m.startOf('day').valueOf() : null;
+    return dayOfPath(file.path, config.folder, (name) => {
+      const m = parseDay(name, config.format, true);
+      return m.isValid() ? m.startOf('day').valueOf() : null;
+    });
   }
 
   private dailyNotes(config: DailyConfig): DailyNote[] {
@@ -349,7 +379,7 @@ export default class TaskRolloverPlugin extends Plugin {
       return;
     }
 
-    const record: Rollover = { target: { file: target, before, after: afterTarget } };
+    const record: Rollover = { target: { file: target, before, after: afterTarget }, sources: [] };
     if (this.settings.sourceAction !== 'keep') {
       let sourceBefore = '';
       let changed = 0;
@@ -359,16 +389,134 @@ export default class TaskRolloverPlugin extends Plugin {
         changed = r.changed;
         return r.text;
       });
-      if (changed > 0) record.source = { file: source, before: sourceBefore, after: afterSource };
+      if (changed > 0) record.sources.push({ file: source, before: sourceBefore, after: afterSource });
     }
     this.last = record;
     this.announce(blocks.length, source, target);
   }
 
+  private openGather() {
+    const config = this.dailyConfig();
+    if (!config) {
+      new Notice('Turn on the Daily notes plugin (or Periodic Notes with daily notes), or set the folder and date format in this plugin’s settings.');
+      return;
+    }
+    new GatherModal(this.app, this, config).open();
+  }
+
+  /** The past daily notes within `days` days (null: all), read, with the unfinished tasks that would move into today's note. */
+  async gatherPlan(config: DailyConfig, days: number | null): Promise<GatherGroup[]> {
+    const today = todayStart();
+    const cutoff = days === null ? null : parseDay().startOf('day').subtract(days, 'days').valueOf();
+    const notes = this.dailyNotes(config).filter((n) => inRange(n.day, today, cutoff));
+    const sources: SourceNote[] = [];
+    const files = new Map<string, TFile>();
+    for (const n of notes) {
+      sources.push({ id: n.file.path, day: n.day, text: await this.app.vault.cachedRead(n.file) });
+      files.set(n.file.path, n.file);
+    }
+    const existing = this.todayNote(config);
+    const existingText = existing ? await this.app.vault.read(existing) : '';
+    const plan: GatherGroup[] = [];
+    for (const g of collectAcross(sources, this.parseOptions(), splitLines(existingText).lines, this.settings.skipDuplicates)) {
+      const file = files.get(g.id);
+      if (file) plan.push({ ...g, file });
+    }
+    return plan;
+  }
+
+  private todayNote(config: DailyConfig): TFile | null {
+    const today = todayStart();
+    return this.dailyNotes(config).find((n) => n.day === today)?.file ?? null;
+  }
+
+  /** Today's daily note, created from the Daily notes template when it does not exist. */
+  private async ensureToday(config: DailyConfig): Promise<TFile> {
+    const existing = this.todayNote(config);
+    if (existing) return existing;
+    const now = parseDay();
+    const name = now.format(config.format);
+    const path = `${config.folder ? `${config.folder}/` : ''}${name}.md`;
+    // Creating the note must not also trigger the automatic rollover of yesterday's tasks.
+    this.busy.add(path);
+    const parts = path.split('/').slice(0, -1);
+    for (let i = 1; i <= parts.length; i++) {
+      const dir = parts.slice(0, i).join('/');
+      if (!this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
+    }
+    let content = '';
+    if (config.template) {
+      const tpl = this.app.metadataCache.getFirstLinkpathDest(config.template, '');
+      if (tpl) {
+        content = (await this.app.vault.cachedRead(tpl))
+          .replace(/{{\s*(date|time)\s*(?::([^}]*))?}}/gi, (_m, kind: string, fmt?: string) =>
+            now.format(fmt?.trim() || (kind.toLowerCase() === 'time' ? 'HH:mm' : 'YYYY-MM-DD')),
+          )
+          .replace(/{{\s*title\s*}}/gi, name.split('/').pop() ?? name);
+      }
+    }
+    return this.app.vault.create(path, content);
+  }
+
+  /**
+   * Move the chosen tasks of many past notes into today's note (created if missing) and change each source
+   * note as the setting says. One undo record covers all of it.
+   */
+  async gatherApply(config: DailyConfig, picks: { file: TFile; tasks: Task[] }[]): Promise<void> {
+    const chosen = picks.filter((p) => p.tasks.length > 0);
+    if (chosen.length === 0) return;
+    let target: TFile | null = null;
+    try {
+      target = await this.ensureToday(config);
+      const file = target;
+      this.busy.add(file.path);
+      let before = '';
+      let taken = new Map<string, Task[]>();
+      const afterTarget = await this.app.vault.process(file, (data) => {
+        before = data;
+        const r = insertGathered(data, chosen.map((p) => ({ id: p.file.path, tasks: p.tasks })), { heading: this.settings.targetHeading }, this.settings.skipDuplicates);
+        taken = r.taken;
+        return r.text;
+      });
+      let count = 0;
+      for (const t of taken.values()) count += t.length;
+      if (count === 0) {
+        new Notice(`Everything you picked is already in “${file.basename}”.`);
+        return;
+      }
+      const record: Rollover = { target: { file, before, after: afterTarget }, sources: [] };
+      const options = this.parseOptions();
+      if (this.settings.sourceAction !== 'keep') {
+        for (const p of chosen) {
+          const moved = taken.get(p.file.path);
+          if (!moved) continue;
+          let sourceBefore = '';
+          let changed = 0;
+          const afterSource = await this.app.vault.process(p.file, (data) => {
+            sourceBefore = data;
+            const r = applyToSource(data, moved.map((t) => t.lines), this.settings.sourceAction, this.settings.movedMarker, options);
+            changed = r.changed;
+            return r.text;
+          });
+          if (changed > 0) record.sources.push({ file: p.file, before: sourceBefore, after: afterSource });
+        }
+      }
+      this.last = record;
+      const notes = taken.size;
+      this.announceText(`${count} unfinished ${count === 1 ? 'task' : 'tasks'} gathered from ${notes} ${notes === 1 ? 'note' : 'notes'} into “${file.basename}”. `);
+    } finally {
+      if (target) this.busy.delete(target.path);
+    }
+  }
+
   private announce(count: number, source: TFile, target: TFile) {
+    this.announceText(`${count} unfinished ${count === 1 ? 'task' : 'tasks'} rolled over from “${source.basename}” to “${target.basename}”. `);
+  }
+
+  private announceText(text: string) {
     const notice = new Notice('', 10000);
     notice.messageEl.empty();
-    notice.messageEl.createSpan({ text: `${count} unfinished ${count === 1 ? 'task' : 'tasks'} rolled over from “${source.basename}” to “${target.basename}”. ` });
+    notice.messageEl.createSpan({ text });
     notice.messageEl.createEl('button', { text: 'Undo' }).addEventListener('click', () => {
       notice.hide();
       void this.undo();
@@ -382,7 +530,7 @@ export default class TaskRolloverPlugin extends Plugin {
       new Notice('There is nothing to undo.');
       return;
     }
-    const parts = [last.target, ...(last.source ? [last.source] : [])];
+    const parts = [last.target, ...last.sources];
     for (const p of parts) {
       if ((await this.app.vault.read(p.file)) !== p.after) {
         new Notice(`Can’t undo: “${p.file.basename}” has changed since the rollover.`);
@@ -445,6 +593,99 @@ class SourceModal extends FuzzySuggestModal<TFile> {
 
   onChooseItem(file: TFile): void {
     this.choose(file);
+  }
+}
+
+/** Pick how far back to look, review the unfinished tasks of every past daily note, and move the ticked ones into today's note. */
+class GatherModal extends Modal {
+  private range = '30';
+  private groups: GatherGroup[] = [];
+  private ticked = new Set<Task>();
+  private listEl!: HTMLElement;
+  private applyBtn!: HTMLButtonElement;
+  private loads = 0;
+
+  constructor(
+    app: App,
+    private plugin: TaskRolloverPlugin,
+    private config: DailyConfig,
+  ) {
+    super(app);
+  }
+
+  onOpen() {
+    this.setTitle('Gather unfinished tasks');
+    const { contentEl } = this;
+    new Setting(contentEl)
+      .setName('Look back')
+      .setDesc('Unfinished tasks of daily notes before today, newest note first. Identical tasks are listed once, from the newest note.')
+      .addDropdown((d) => {
+        for (const [key, r] of Object.entries(RANGES)) d.addOption(key, r.label);
+        d.setValue(this.range).onChange((v) => {
+          this.range = v;
+          void this.load();
+        });
+      });
+    this.listEl = contentEl.createDiv({ cls: 'task-rollover-gather-list' });
+    const footer = contentEl.createDiv({ cls: 'modal-button-container' });
+    this.applyBtn = footer.createEl('button', { text: 'Move into today', cls: 'mod-cta' });
+    this.applyBtn.addEventListener('click', () => void this.apply());
+    footer.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
+    void this.load();
+  }
+
+  onClose() {
+    this.loads++;
+    this.contentEl.empty();
+  }
+
+  private async load() {
+    const mine = ++this.loads;
+    this.listEl.empty();
+    this.listEl.createEl('p', { text: 'Reading daily notes…' });
+    this.applyBtn.disabled = true;
+    const groups = await this.plugin.gatherPlan(this.config, RANGES[this.range].days);
+    if (mine !== this.loads) return;
+    this.groups = groups;
+    this.ticked = new Set(groups.reduce<Task[]>((all, g) => all.concat(g.tasks), []));
+    this.render();
+  }
+
+  private render() {
+    this.listEl.empty();
+    if (this.groups.length === 0) {
+      this.listEl.createEl('p', { text: 'No unfinished tasks in that range, or they are all in today’s note already.' });
+    }
+    for (const g of this.groups) {
+      const section = this.listEl.createDiv();
+      section.createEl('h4', { text: g.file.basename });
+      for (const t of g.tasks) {
+        const label = section.createEl('label', { cls: 'setting-item-description' });
+        const box = label.createEl('input', { type: 'checkbox' });
+        box.checked = true;
+        box.addEventListener('change', () => {
+          if (box.checked) this.ticked.add(t);
+          else this.ticked.delete(t);
+          this.refresh();
+        });
+        const extra = t.lines.length - 1;
+        const text = t.lines[0].replace(/^\s*(?:[-*+]|\d+[.)])[ \t]+\[.\][ \t]*/u, '') || '(empty)';
+        label.createSpan({ text: ` ${text}${extra > 0 ? ` (+${extra} nested ${extra === 1 ? 'line' : 'lines'})` : ''}` });
+      }
+    }
+    this.refresh();
+  }
+
+  private refresh() {
+    const n = this.ticked.size;
+    this.applyBtn.disabled = n === 0;
+    this.applyBtn.setText(n === 0 ? 'Move into today' : `Move ${n} ${n === 1 ? 'task' : 'tasks'} into today`);
+  }
+
+  private async apply() {
+    const picks = this.groups.map((g) => ({ file: g.file, tasks: g.tasks.filter((t) => this.ticked.has(t)) }));
+    this.close();
+    await this.plugin.gatherApply(this.config, picks);
   }
 }
 
