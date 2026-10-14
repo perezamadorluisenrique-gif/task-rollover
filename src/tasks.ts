@@ -71,24 +71,82 @@ function width(line: string): number {
   return w;
 }
 
-const FENCE = /^\s{0,3}(`{3,}|~{3,})(.*)$/;
+/**
+ * A fence line: indented (under a list item, with spaces or a tab), inside a
+ * quote or callout (`> `), or opening a list item (`- `).
+ */
+const FENCE = /^((?:[ \t]*>[ \t]?)*)[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?(`{3,}|~{3,})(.*)$/;
 
-/** Which lines sit inside a fenced code block, fences included. */
+/** How many quote or callout levels a line sits in: two for `> > text`. */
+function quoteDepth(line: string): number {
+  return (/^(?:[ \t]*>[ \t]?)*/.exec(line)?.[0] ?? '').split('>').length - 1;
+}
+
+/** `line` with its inline code spans taken out, so a `%%` written in code is text. */
+function withoutInlineCode(line: string): string {
+  let out = '';
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== '`') {
+      out += line[i++];
+      continue;
+    }
+    let run = 1;
+    while (line[i + run] === '`') run++;
+    // A span closes on the next run exactly as long; with none, the run is text.
+    const runs = /`+/g;
+    runs.lastIndex = i + run;
+    let close = -1;
+    for (let m = runs.exec(line); m; m = runs.exec(line)) {
+      if (m[0].length === run) {
+        close = m.index;
+        break;
+      }
+    }
+    if (close === -1) out += line.slice(i, i + run);
+    i = close === -1 ? i + run : close + run;
+  }
+  return out;
+}
+
+/**
+ * Which lines a task on them would not count on: inside a fenced code block
+ * (fences included, in a callout or a list item too), or inside a comment,
+ * `%% … %%` or an HTML comment, which Obsidian hides. A comment left open
+ * runs to the end of the note. The line a comment opens on keeps what comes
+ * before it, so `- [ ] Call %% a note` is still a task.
+ */
 function fenced(lines: string[]): boolean[] {
   const mask = new Array<boolean>(lines.length).fill(false);
   let fence: string | null = null;
   let length = 0;
+  let depth = 0;
+  let comment: '%%' | '-->' | null = null;
   for (let i = 0; i < lines.length; i++) {
-    const m = FENCE.exec(lines[i]);
+    const line = lines[i];
+    if (fence !== null && quoteDepth(line) < depth) fence = null;
+    if (comment !== null) {
+      mask[i] = true;
+      const prose = comment === '%%' ? withoutInlineCode(line) : line;
+      if (comment === '%%' ? (prose.split('%%').length - 1) % 2 === 1 : prose.includes('-->')) comment = null;
+      continue;
+    }
+    const m = FENCE.exec(line);
     if (fence === null) {
-      if (m) {
-        fence = m[1][0];
-        length = m[1].length;
+      if (m && !(m[2][0] === '`' && m[3].includes('`'))) {
+        fence = m[2][0];
+        length = m[2].length;
+        depth = quoteDepth(line);
+        mask[i] = true;
+      } else if ((withoutInlineCode(line).split('%%').length - 1) % 2 === 1) {
+        comment = '%%';
+      } else if (/^ {0,3}<!--/.test(line) && !line.includes('-->', line.indexOf('<!--') + 4)) {
+        comment = '-->';
         mask[i] = true;
       }
     } else {
       mask[i] = true;
-      if (m && m[1][0] === fence && m[1].length >= length && m[2].trim() === '') fence = null;
+      if (m && m[2][0] === fence && m[2].length >= length && m[3].trim() === '' && quoteDepth(line) === depth) fence = null;
     }
   }
   return mask;
@@ -234,9 +292,19 @@ export function applyToSource(
     hits.push(t);
   }
   if (hits.length === 0) return { text, changed: 0 };
+  const done = graphemes(options.doneMarkers);
   for (const t of hits.reverse()) {
-    if (action === 'remove') lines.splice(t.start, t.end - t.start);
-    else lines[t.start] = lines[t.start].replace(/^(\s*(?:[-*+]|\d+[.)])[ \t]+\[)[^\]]+(\])/, `$1${marker}$2`);
+    if (action === 'remove') {
+      lines.splice(t.start, t.end - t.start);
+      continue;
+    }
+    // The nested tasks moved with it, so they are marked too; left open, they
+    // would roll over again on their own.
+    for (let i = t.start; i < t.end; i++) {
+      const task = parseTaskLine(lines[i]);
+      if (!task || (i > t.start && done.includes(task.marker))) continue;
+      lines[i] = lines[i].replace(/^(\s*(?:[-*+]|\d+[.)])[ \t]+\[)[^\]]+(\])/, `$1${marker}$2`);
+    }
   }
   return { text: lines.join(eol), changed: hits.length };
 }

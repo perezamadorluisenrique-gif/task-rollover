@@ -183,3 +183,26 @@ test('imports the original settings, ignoring nonsense', () => {
   assert.deepEqual(fromLegacy({ templateHeading: 'none', deleteOnComplete: false }), { targetHeading: '', sourceAction: 'keep' });
   assert.deepEqual(fromLegacy({ templateHeading: 3, doneStatusMarkers: '' }), {});
 });
+
+test('tasks inside a comment, closed or left open, do not roll over', () => {
+  assert.deepEqual(found('- [ ] a\n%%\n- [ ] hidden\n%%\n- [ ] b'), ['- [ ] a', '- [ ] b']);
+  assert.deepEqual(found('- [ ] a\n<!--\n- [ ] hidden\n-->\n- [ ] b'), ['- [ ] a', '- [ ] b']);
+  assert.deepEqual(found('- [ ] a\n%%\n- [ ] hidden to the end'), ['- [ ] a']);
+  // A comment that opens after a task leaves the task where it is.
+  assert.deepEqual(found('- [ ] call Ana %% about the trip\n- [ ] hidden\n%%\n- [ ] b'), ['- [ ] call Ana %% about the trip', '- [ ] b']);
+  // `%%` in inline code is text.
+  assert.deepEqual(found('Type `%%` to comment\n- [ ] a'), ['- [ ] a']);
+});
+
+test('tasks inside code in a callout or a list item do not roll over', () => {
+  assert.deepEqual(found('> [!example]\n> ```md\n> - [ ] example\n> ```\n- [ ] real'), ['- [ ] real']);
+  assert.deepEqual(found('- item\n\t```\n\t- [ ] example\n\t```\n- [ ] real'), ['- [ ] real']);
+});
+
+test('marking a moved task also marks the open tasks nested in it', () => {
+  const text = '- [ ] parent\n  - [ ] child\n  - [x] finished child\n- [ ] other';
+  const moved = findTasks(lines(text), OPTS).slice(0, 1).map((t) => t.lines);
+  const r = applyToSource(text, moved, 'mark', '>', OPTS);
+  assert.equal(r.text, '- [>] parent\n  - [>] child\n  - [x] finished child\n- [ ] other');
+  assert.deepEqual(found(r.text), ['- [ ] other']);
+});
