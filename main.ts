@@ -33,6 +33,7 @@ import {
   withoutDuplicates,
 } from './src/tasks.ts';
 import type { LegacySettings, ParseOptions, SourceAction, Task } from './src/tasks.ts';
+import { moreDefinitions, renderMore } from './src/more-link.ts';
 
 interface TaskRolloverSettings {
   /** Roll over by itself when today's daily note is created. */
@@ -740,6 +741,7 @@ class TaskRolloverSettingTab extends PluginSettingTab {
         ],
       },
       { ...TEXT.legacy, action: () => void this.importLegacy() },
+      ...(moreDefinitions() as SettingDefinitionItem[]),
     ];
   }
 
@@ -791,6 +793,7 @@ class TaskRolloverSettingTab extends PluginSettingTab {
   display(): void {
     this.legacy = true;
     this.draw();
+    renderMore(this.containerEl, (el) => new Setting(el));
   }
 
   private draw(): void {
